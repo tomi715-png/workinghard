@@ -595,24 +595,29 @@ CreateModernGUI()
 
 -- ================================
 -- [ANTI-AFK RENDSZER]
--- ================================
 task.spawn(function()
-    local VirtualUser = game:GetService("VirtualUser")
-    -- Összekötjük a LocalPlayer Idled (tétlen) eseményével
-    Players.LocalPlayer.Idled:Connect(function()
-        -- Ha a játék észleli, hogy tétlen vagy, a VirtualUser megnyom egy rejtett gombot a kamerán
-        VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-        task.wait(0.5)
-        VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-    end)
+    local VirtualInputManager = game:GetService("VirtualInputManager")
     
-    -- Biztonsági folyamatos mozgás-szimuláció 2 percenként, ha az Idled esemény nem triggerelne
+    -- Biztonsági kényszerített mozgás és kattintás 3 percenként (Reseteli a számlálót)
     while true do
+        task.wait(180) -- 3 percenként egyszer fut le
         pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new(0,0))
+            local Character = LocalPlayer.Character
+            if Character and Character:FindFirstChild("HumanoidRootPart") then
+                local HRP = Character.HumanoidRootPart
+                
+                -- 1. Apró pozíció-reset (elmozdítja 0.1 studot, majd vissza, így a szerver mozgást lát)
+                local OldCFrame = HRP.CFrame
+                HRP.CFrame = OldCFrame * CFrame.new(0, 0, 0.1)
+                task.wait(0.05)
+                HRP.CFrame = OldCFrame
+                
+                -- 2. Virtuális egérkattintás szimulálása a képernyő közepére
+                VirtualInputManager:SendMouseButtonEvent(500, 500, 0, true, game, 1)
+                task.wait(0.05)
+                VirtualInputManager:SendMouseButtonEvent(500, 500, 0, false, game, 1)
+            end
         end)
-        task.wait(120) -- 2 percenként egyszer megmozdítja a háttérben a kamerát/karaktert
     end
 end)
 
