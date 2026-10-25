@@ -598,7 +598,7 @@ CreateModernGUI()
 task.spawn(function()
     local VirtualUser = game:GetService("VirtualUser")
     
-    -- 🌐 1. HÁLÓZATI BYPASS: Teljesen lekapcsoljuk a Roblox gyári lecsatlakozási rutinját
+    -- 🌐 1. HÁLÓZATI BYPASS
     LocalPlayer.Idled:Connect(function()
         pcall(function()
             VirtualUser:CaptureController()
@@ -606,22 +606,29 @@ task.spawn(function()
         end)
     end)
     
-    -- 🏃‍♂️ 2. FIZIKAI SÉTA: 2 percenként fizikailag megmozgatjuk a karaktert (Reseteli a belső számlálót)
+    -- 🔄 2. FIZIKAI FORGATÁS ÉS POZÍCIÓ RESET (Megkerüli a BodyPosition rögzítést)
     while true do
         task.wait(120) -- 2 percenként egyszer fut le
         if Config.Enabled then
             pcall(function()
                 local Character = LocalPlayer.Character
-                local Hum = Character and Character:FindFirstChild("Humanoid")
                 local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
                 
-                if Hum and HRP and not IsRetreating then
-                    -- Apró fizikai séta előre, majd hátra a játékmotoron keresztül
-                    Hum:Move(Vector3.new(0, 0, -1), false)
-                    task.wait(0.2)
-                    Hum:Move(Vector3.new(0, 0, 1), false)
-                    task.wait(0.2)
-                    Hum:Move(Vector3.new(0, 0, 0), false) -- Megállás
+                if HRP then
+                    -- Ha van aktív lebegtető, azt mozdítjuk meg, ha nincs, a sima CFrame-et forgatjuk
+                    local FloatPos = HRP:FindFirstChild("FloatPosition")
+                    if FloatPos then
+                        local currentPos = FloatPos.Position
+                        FloatPos.Position = currentPos + Vector3.new(0, 0.1, 0)
+                        task.wait(0.1)
+                        FloatPos.Position = currentPos
+                    else
+                        -- Minimális elforgatás (a szerver azonnal fizikai aktivitásnak látja)
+                        local oldCFrame = HRP.CFrame
+                        HRP.CFrame = oldCFrame * CFrame.Angles(0, math.rad(1), 0)
+                        task.wait(0.1)
+                        HRP.CFrame = oldCFrame
+                    end
                 end
             end)
         end
