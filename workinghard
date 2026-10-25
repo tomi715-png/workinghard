@@ -590,38 +590,78 @@ end
 -- ================================
 -- [MAIN WORKING LOOP - WITH TELEPORT ATTACK RANGE]
 -- ================================
+task.spawn(InitializeRemote)
+CreateModernGUI()
+
+-- ================================
+-- [ANTI-AFK RENDSZER]
+-- ================================
+task.spawn(function()
+    local VirtualUser = game:GetService("VirtualUser")
+    -- Összekötjük a LocalPlayer Idled (tétlen) eseményével
+    Players.LocalPlayer.Idled:Connect(function()
+        -- Ha a játék észleli, hogy tétlen vagy, a VirtualUser megnyom egy rejtett gombot a kamerán
+        VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+        task.wait(0.5)
+        VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    end)
+    
+    -- Biztonsági folyamatos mozgás-szimuláció 2 percenként, ha az Idled esemény nem triggerelne
+    while true do
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new(0,0))
+        end)
+        task.wait(120) -- 2 percenként egyszer megmozdítja a háttérben a kamerát/karaktert
+    end
+end)
+
+-- 🖥️ 1. Stabil GUI és logikai hurok (Ez kezeli a felületet és a menüt változatlan sebességgel)
 task.spawn(function()
     while ScriptRunning do
-        if Config.Enabled then
-            InitializeRemote()
-            local target = GetClosestEnemy()
-            
-            if target and target:FindFirstChild("Humanoid") and target.Humanoid.Health > 0 and target:FindFirstChild("HumanoidRootPart") then
-                StatusLabel.Text = "Target: " .. target.Name .. " [" .. math.floor(CalculateHPPercent(target.Humanoid.Health, target.Humanoid.MaxHealth)) .. "%]"
+        HandleLogic()
+        task.wait(0.1) -- Biztonságos sebesség a GUI-nak, hogy ne tűnjenek el a gombok
+    end
+end)
+
+-- 🚀 2. Különálló ULTRA SPEED KILL AURA HUROK (Ez csak a támadást spammeli a háttérben, maximális sebességgel)
+task.spawn(function()
+    while ScriptRunning do
+        if Config.Enabled and Config.FarmDamage then
+            local Character = LocalPlayer.Character
+            if Character and Character:FindFirstChild("HumanoidRootPart") then
+                local MyPos = Character.HumanoidRootPart.Position
                 
-                -- 🚀 TÉNYLEGES ÜTÉS RANGE FIX: Karakter oda-teleportálása a szörny fölé, hogy a szerver engedje a sebzést
-                local Character = LocalPlayer.Character
-                if Character and Character:FindFirstChild("HumanoidRootPart") then
-                    -- A szörny pozíciója fölé repít minket 5 stud magasságba (így ütőtávon belül vagyunk, de biztonságban)
-                    local TargetPos = target.HumanoidRootPart.CFrame * CFrame.new(0, 5, 0)
-                    Character.HumanoidRootPart.CFrame = TargetPos
+                -- Kilőjük a támadást az összes környező szörnyre egyszerre (Kill Aura)
+                local function TargetAll(obj)
+                    if obj:IsA("Model") and obj ~= Character and obj:FindFirstChild("Humanoid") and obj:FindFirstChild("HumanoidRootPart") then
+                        if obj.Humanoid.Health > 0 then
+                            local Dist = (obj.HumanoidRootPart.Position - MyPos).Magnitude
+                            if Dist <= Config.ScanRange and AttackRemote then
+                                pcall(function()
+                                    -- Kritikus csomagokat küldünk az összes mobra egyszerre
+                                    AttackRemote:InvokeServer(obj, {
+                                        ["Critical"] = true,
+                                        ["IsCritical"] = true,
+                                        ["Crit"] = true,
+                                        ["DamageMultiplier"] = 2,
+                                        ["Type"] = "Critical"
+                                    })
+                                end)
+                            end
+                        end
+                    elseif obj:IsA("Folder") or obj:IsA("Model") then 
+                        for _, innerObj in pairs(obj:GetChildren()) do
+                            TargetAll(innerObj)
+                        end
+                    end
                 end
-                
-                if AttackRemote and Config.FarmDamage then
-                    pcall(function()
-                        AttackRemote:InvokeServer(target, {
-                            ["Critical"] = true,
-                            ["IsCritical"] = true,
-                            ["Crit"] = true,
-                            ["DamageMultiplier"] = 2,
-                            ["Type"] = "Critical"
-                        })
-                    end)
+
+                for _, obj in pairs(workspace:GetChildren()) do
+                    TargetAll(obj)
                 end
-            else
-                StatusLabel.Text = "Status: Scanning for monsters..."
             end
         end
-        task.wait(Config.AttackSpeed)
+        task.wait(Config.AttackSpeed) -- Ez pörgeti az 5x-ös vagy maximális ütési sebességet
     end
 end)
