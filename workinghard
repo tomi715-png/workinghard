@@ -596,28 +596,35 @@ CreateModernGUI()
 -- ================================
 -- [ANTI-AFK RENDSZER]
 task.spawn(function()
-    local VirtualInputManager = game:GetService("VirtualInputManager")
+    local VirtualUser = game:GetService("VirtualUser")
     
-    -- Biztonsági kényszerített mozgás és kattintás 3 percenként (Reseteli a számlálót)
-    while true do
-        task.wait(180) -- 3 percenként egyszer fut le
+    -- 🌐 1. HÁLÓZATI BYPASS: Teljesen lekapcsoljuk a Roblox gyári lecsatlakozási rutinját
+    LocalPlayer.Idled:Connect(function()
         pcall(function()
-            local Character = LocalPlayer.Character
-            if Character and Character:FindFirstChild("HumanoidRootPart") then
-                local HRP = Character.HumanoidRootPart
-                
-                -- 1. Apró pozíció-reset (elmozdítja 0.1 studot, majd vissza, így a szerver mozgást lát)
-                local OldCFrame = HRP.CFrame
-                HRP.CFrame = OldCFrame * CFrame.new(0, 0, 0.1)
-                task.wait(0.05)
-                HRP.CFrame = OldCFrame
-                
-                -- 2. Virtuális egérkattintás szimulálása a képernyő közepére
-                VirtualInputManager:SendMouseButtonEvent(500, 500, 0, true, game, 1)
-                task.wait(0.05)
-                VirtualInputManager:SendMouseButtonEvent(500, 500, 0, false, game, 1)
-            end
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new(0,0))
         end)
+    end)
+    
+    -- 🏃‍♂️ 2. FIZIKAI SÉTA: 2 percenként fizikailag megmozgatjuk a karaktert (Reseteli a belső számlálót)
+    while true do
+        task.wait(120) -- 2 percenként egyszer fut le
+        if Config.Enabled then
+            pcall(function()
+                local Character = LocalPlayer.Character
+                local Hum = Character and Character:FindFirstChild("Humanoid")
+                local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
+                
+                if Hum and HRP and not IsRetreating then
+                    -- Apró fizikai séta előre, majd hátra a játékmotoron keresztül
+                    Hum:Move(Vector3.new(0, 0, -1), false)
+                    task.wait(0.2)
+                    Hum:Move(Vector3.new(0, 0, 1), false)
+                    task.wait(0.2)
+                    Hum:Move(Vector3.new(0, 0, 0), false) -- Megállás
+                end
+            end)
+        end
     end
 end)
 
