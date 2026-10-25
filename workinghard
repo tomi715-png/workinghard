@@ -1,0 +1,641 @@
+-- [[ COORDINATES ]]
+local BossPos = CFrame.new(4929.25342, 707.571045, 8318.50391, 0.421293497, -0, -0.906924367, 0, 1, -0, 0.906924367, 0, 0.421293497)
+
+--[[ 
+    ULTIMATE FARM GUI v3 [FINAL VERSION]
+    - System: Deep Scan (Finds mobs inside Folder 1, 2, 3... 10)
+    - Logic: Targets the CLOSEST Super Boss (ignores far ones)
+    - UI: Always on Top + Minimize Button (B)
+    - Retreat: Based on MONSTER HP (30% = Retreat, 90% = Resume)
+    - Fixed: No floating bug when toggle OFF or target changes
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- ระบบอ่าน MonsterInfo
+local MonsterInfoCache = {}
+local function GetMonsterInfo()
+    local success, result = pcall(function()
+        return ReplicatedStorage.GameInfo.MonsterInfo
+    end)
+    if success and result then
+        return result
+    end
+    return nil
+end
+
+-- ================================
+-- [SETTINGS]
+-- ================================
+local Config = {
+    Enabled = false,
+    FarmDamage = false,
+    AttackSpeed = 0.001,
+    ScanRange = 100,
+    RetreatHP = 30,   -- บินหนีเมื่อมอน HP ≤ 30%
+    ResumeHP = 90,    -- ลงมาสู้เมื่อมอน HP ≥ 90%
+    SafeHeight = 40,
+}
+
+-- ================================
+-- [VARIABLES]
+-- ================================
+local AttackRemote = nil
+local IsInitialized = false
+local ScriptRunning = true
+local IsMinimized = false 
+
+local CurrentTarget = nil
+local FightPosition = nil
+local IsRetreating = false
+
+-- ================================
+-- [HELPER FUNCTIONS - รองรับ 0 ถึง Infinity]
+-- ================================
+
+-- ฟังก์ชันแปลงตัวเลข รองรับ 0, NaN, Infinity
+local function FormatNumber(n)
+    if not n or type(n) ~= "number" then 
+        return "0" 
+    end
+    
+    if n ~= n then 
+        return "N/A" 
+    end
+    
+    if n == math.huge then 
+        return "∞" 
+    end
+    
+    if n == -math.huge then 
+        return "-∞" 
+    end
+    
+    if n < 0 then 
+        return "0" 
+    end
+    
+    if n >= 1e15 then return string.format("%.2fQ", n / 1e15)
+    elseif n >= 1e12 then return string.format("%.2fT", n / 1e12)
+    elseif n >= 1e9 then return string.format("%.2fB", n / 1e9)
+    elseif n >= 1e6 then return string.format("%.2fM", n / 1e6)
+    elseif n >= 1e3 then return string.format("%.2fK", n / 1e3)
+    else return tostring(math.floor(n))
+    end
+end
+
+-- ฟังก์ชันคำนวดเปอร์เซ็นต์ รองรับทุกกรณี
+local function CalculateHPPercent(current, max)
+    if not max or max == 0 then
+        return 0
+    end
+    
+    if max == math.huge then
+        if current == math.huge then
+            return 100
+        else
+            return 0
+        end
+    end
+    
+    if current == math.huge then
+        return 100
+    end
+    
+    if not current or current < 0 then
+        return 0
+    end
+    
+    return math.clamp((current / max) * 100, 0, 100)
+end
+
+local function GetHorizontalDistance(pos1, pos2)
+    return (Vector3.new(pos1.X, 0, pos1.Z) - Vector3.new(pos2.X, 0, pos2.Z)).Magnitude
+end
+
+-- ระบบค้นหาทุกซอกทุกมุม (Folder 1-10)
+local function GetClosestEnemy()
+    local Character = LocalPlayer.Character
+    if not Character or not Character:FindFirstChild("HumanoidRootPart") then return nil end
+    
+    local MyPos = Character.HumanoidRootPart.Position
+    local ClosestEnemy = nil
+    local ShortestDistance = math.huge
+
+    local function CheckObject(obj)
+        if obj:IsA("Model") and obj ~= Character and obj:FindFirstChild("Humanoid") and obj:FindFirstChild("HumanoidRootPart") then
+            local Hum = obj.Humanoid
+            if Hum.Health > 0 then
+                local Dist = (obj.HumanoidRootPart.Position - MyPos).Magnitude
+                if Dist <= Config.ScanRange and Dist < ShortestDistance then
+                    ShortestDistance = Dist
+                    ClosestEnemy = obj
+                end
+            end
+        elseif obj:IsA("Folder") or obj:IsA("Model") then 
+            for _, innerObj in pairs(obj:GetChildren()) do
+                CheckObject(innerObj)
+            end
+        end
+    end
+
+    for _, obj in pairs(workspace:GetChildren()) do
+        CheckObject(obj)
+    end
+    
+    return ClosestEnemy
+end
+
+local function InitializeRemote()
+    if IsInitialized then return end
+    local Success, Result = pcall(function()
+        return ReplicatedStorage.Packages.Knit.Services.MonsterService.RF.RequestAttack
+    end)
+    if Success and Result then
+        AttackRemote = Result
+        IsInitialized = true
+    end
+end
+
+local function ClearPhysics()
+    local Character = LocalPlayer.Character
+    if not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
+    local HRP = Character.HumanoidRootPart
+    if HRP:FindFirstChild("FloatPosition") then HRP.FloatPosition:Destroy() end
+    if HRP:FindFirstChild("FloatGyro") then HRP.FloatGyro:Destroy() end
+    if Character:FindFirstChild("Humanoid") then Character.Humanoid.PlatformStand = false end
+end
+
+-- ================================
+-- [GUI MAKER]
+-- ================================
+local GUI = {}
+local function CreateModernGUI()
+    local Old = LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("UltimateAttackGUI")
+    if Old then Old:Destroy() end
+
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "UltimateAttackGUI"
+    ScreenGui.DisplayOrder = 10000
+    ScreenGui.IgnoreGuiInset = true
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local MiniIcon = Instance.new("TextButton")
+    MiniIcon.Name = "MiniIcon"
+    MiniIcon.Size = UDim2.new(0, 50, 0, 50)
+    MiniIcon.Position = UDim2.new(0, 20, 0.5, -25)
+    MiniIcon.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    MiniIcon.Text = "B"
+    MiniIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MiniIcon.Font = Enum.Font.GothamBold
+    MiniIcon.TextSize = 24
+    MiniIcon.Visible = false 
+    MiniIcon.ZIndex = 10 
+    MiniIcon.Parent = ScreenGui
+    
+    Instance.new("UICorner", MiniIcon).CornerRadius = UDim.new(1, 0)
+    local MiniStroke = Instance.new("UIStroke")
+    MiniStroke.Color = Color3.fromRGB(100, 255, 100)
+    MiniStroke.Thickness = 3
+    MiniStroke.Parent = MiniIcon
+
+    local Main = Instance.new("Frame")
+    Main.Name = "MainFrame"
+    Main.Size = UDim2.new(0, 340, 0, 380)
+    Main.Position = UDim2.new(0.5, -170, 0.2, 0)
+    Main.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    Main.Active = true
+    Main.Draggable = true
+    Main.Parent = ScreenGui
+    
+    Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
+    
+    local Header = Instance.new("Frame")
+    Header.Size = UDim2.new(1, 0, 0, 35)
+    Header.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    Header.Parent = Main
+    Instance.new("UICorner", Header).CornerRadius = UDim.new(0, 10)
+
+    local Title = Instance.new("TextLabel")
+    Title.Text = "⚡ AUTO Attack Speed v3"
+    Title.Size = UDim2.new(1, -80, 1, 0)
+    Title.Position = UDim2.new(0, 15, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Title.Font = Enum.Font.GothamBlack
+    Title.TextSize = 14
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = Header
+
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Text = "×"
+    CloseBtn.Size = UDim2.new(0, 35, 0, 35)
+    CloseBtn.Position = UDim2.new(1, -35, 0, 0)
+    CloseBtn.BackgroundTransparency = 1
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
+    CloseBtn.Font = Enum.Font.GothamMedium
+    CloseBtn.TextSize = 24
+    CloseBtn.Parent = Header
+    CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() ScriptRunning = false end)
+
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Text = "-"
+    MinBtn.Size = UDim2.new(0, 35, 0, 35)
+    MinBtn.Position = UDim2.new(1, -70, 0, 0)
+    MinBtn.BackgroundTransparency = 1
+    MinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.TextSize = 24
+    MinBtn.Parent = Header
+
+    local function ToggleGUI()
+        IsMinimized = not IsMinimized
+        Main.Visible = not IsMinimized
+        MiniIcon.Visible = IsMinimized
+    end
+
+    MinBtn.MouseButton1Click:Connect(ToggleGUI)
+    MiniIcon.MouseButton1Click:Connect(ToggleGUI)
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not gameProcessed and input.KeyCode == Enum.KeyCode.B then
+            ToggleGUI()
+        end
+    end)
+
+    local Content = Instance.new("Frame")
+    Content.Position = UDim2.new(0, 15, 0, 45)
+    Content.Size = UDim2.new(1, -30, 1, -55)
+    Content.BackgroundTransparency = 1
+    Content.Parent = Main
+
+    local StatusLbl = Instance.new("TextLabel")
+    StatusLbl.Text = "STATUS: IDLE"
+    StatusLbl.Size = UDim2.new(1, 0, 0, 15)
+    StatusLbl.BackgroundTransparency = 1
+    StatusLbl.TextColor3 = Color3.fromRGB(180, 180, 180)
+    StatusLbl.Font = Enum.Font.GothamBold
+    StatusLbl.TextSize = 10
+    StatusLbl.TextXAlignment = Enum.TextXAlignment.Left
+    StatusLbl.Parent = Content
+    GUI.StatusLabel = StatusLbl
+
+    local TargetFrame = Instance.new("Frame")
+    TargetFrame.Position = UDim2.new(0, 0, 0, 20)
+    TargetFrame.Size = UDim2.new(1, 0, 0, 45)
+    TargetFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    TargetFrame.Parent = Content
+    Instance.new("UICorner", TargetFrame).CornerRadius = UDim.new(0, 6)
+
+    local TargetName = Instance.new("TextLabel")
+    TargetName.Text = "No Target"
+    TargetName.Size = UDim2.new(1, -10, 0, 20)
+    TargetName.Position = UDim2.new(0, 10, 0, 5)
+    TargetName.BackgroundTransparency = 1
+    TargetName.TextColor3 = Color3.fromRGB(255, 200, 50)
+    TargetName.Font = Enum.Font.GothamBold
+    TargetName.TextSize = 12
+    TargetName.TextXAlignment = Enum.TextXAlignment.Left
+    TargetName.Parent = TargetFrame
+    GUI.TargetName = TargetName
+
+    local HPBack = Instance.new("Frame")
+    HPBack.Position = UDim2.new(0, 10, 0, 28)
+    HPBack.Size = UDim2.new(1, -20, 0, 8)
+    HPBack.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    HPBack.Parent = TargetFrame
+    Instance.new("UICorner", HPBack).CornerRadius = UDim.new(0, 4)
+
+    local HPFill = Instance.new("Frame")
+    HPFill.Size = UDim2.new(0, 0, 1, 0)
+    HPFill.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    HPFill.Parent = HPBack
+    Instance.new("UICorner", HPFill).CornerRadius = UDim.new(0, 4)
+    GUI.HPFill = HPFill
+
+    local HPText = Instance.new("TextLabel")
+    HPText.Text = ""
+    HPText.Size = UDim2.new(1, 0, 0, 10)
+    HPText.Position = UDim2.new(0, 0, -1.2, 0)
+    HPText.BackgroundTransparency = 1
+    HPText.TextColor3 = Color3.fromRGB(200, 200, 200)
+    HPText.Font = Enum.Font.Gotham
+    HPText.TextSize = 10
+    HPText.TextXAlignment = Enum.TextXAlignment.Right
+    HPText.Parent = HPBack
+    GUI.HPText = HPText
+
+    local function CreateToggle(name, yPos, callback)
+        local Frame = Instance.new("Frame")
+        Frame.Size = UDim2.new(1, 0, 0, 35)
+        Frame.Position = UDim2.new(0, 0, 0, yPos)
+        Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        Frame.Parent = Content
+        Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 6)
+        local Label = Instance.new("TextLabel")
+        Label.Text = name
+        Label.Size = UDim2.new(0.6, 0, 1, 0)
+        Label.Position = UDim2.new(0, 10, 0, 0)
+        Label.BackgroundTransparency = 1
+        Label.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Label.Font = Enum.Font.GothamMedium
+        Label.TextSize = 13
+        Label.TextXAlignment = Enum.TextXAlignment.Left
+        Label.Parent = Frame
+        local Btn = Instance.new("TextButton")
+        Btn.Text = "OFF"
+        Btn.Size = UDim2.new(0, 60, 0, 24)
+        Btn.Position = UDim2.new(1, -70, 0, 5)
+        Btn.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+        Btn.TextColor3 = Color3.fromRGB(150, 150, 150)
+        Btn.Font = Enum.Font.GothamBold
+        Btn.TextSize = 11
+        Btn.Parent = Frame
+        Instance.new("UICorner", Btn).CornerRadius = UDim.new(0, 6)
+        Btn.MouseButton1Click:Connect(function()
+            local IsOn = Btn.Text == "OFF"
+            Btn.Text = IsOn and "ON" or "OFF"
+            Btn.BackgroundColor3 = IsOn and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(50, 50, 55)
+            Btn.TextColor3 = IsOn and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+            callback(IsOn)
+        end)
+        return Btn
+    end
+
+    GUI.MainToggle = CreateToggle("Auto Attack Speed X3", 80, function(val) 
+        Config.Enabled = val 
+        -- ยกเลิก retreat เมื่อปิด toggle
+        if not val and IsRetreating then
+            IsRetreating = false
+            ClearPhysics()
+        end
+    end)
+    
+    GUI.FarmToggle = CreateToggle("Auto Low HP Retreat", 125, function(val) 
+        Config.FarmDamage = val 
+        -- ยกเลิก retreat เมื่อปิด toggle
+        if not val and IsRetreating then
+            IsRetreating = false
+            ClearPhysics()
+        end
+    end)
+
+    local function CreateInput(name, placeholder, xPos, callback)
+        local Frame = Instance.new("Frame")
+        Frame.Size = UDim2.new(0.48, 0, 0, 45)
+        Frame.Position = UDim2.new(xPos, 0, 0, 170)
+        Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        Frame.Parent = Content
+        Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 6)
+        local Lbl = Instance.new("TextLabel")
+        Lbl.Text = name
+        Lbl.Position = UDim2.new(0, 10, 0, 5)
+        Lbl.Size = UDim2.new(1, -20, 0, 15)
+        Lbl.BackgroundTransparency = 1
+        Lbl.TextColor3 = Color3.fromRGB(120, 120, 120)
+        Lbl.Font = Enum.Font.GothamBold
+        Lbl.TextSize = 9
+        Lbl.Parent = Frame
+        local Box = Instance.new("TextBox")
+        Box.Text = placeholder
+        Box.Position = UDim2.new(0, 10, 0, 20)
+        Box.Size = UDim2.new(1, -20, 0, 20)
+        Box.BackgroundTransparency = 1
+        Box.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Box.Font = Enum.Font.GothamBold
+        Box.TextSize = 14
+        Box.TextXAlignment = Enum.TextXAlignment.Left
+        Box.Parent = Frame
+        Box.FocusLost:Connect(function()
+            local num = tonumber(Box.Text)
+            if num then callback(num) else Box.Text = placeholder end
+        end)
+    end
+
+    CreateInput("RETREAT %", tostring(Config.RetreatHP), 0, function(v) Config.RetreatHP = v end)
+    CreateInput("RESUME %", tostring(Config.ResumeHP), 0.52, function(v) Config.ResumeHP = v end)
+
+    local TeleBtn = Instance.new("TextButton")
+    TeleBtn.Text = "WARP TO SUPER BOSS"
+    TeleBtn.Size = UDim2.new(1, 0, 0, 40)
+    TeleBtn.Position = UDim2.new(0, 0, 0, 230)
+    TeleBtn.BackgroundColor3 = Color3.fromRGB(100, 60, 255)
+    TeleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TeleBtn.Font = Enum.Font.GothamBlack
+    TeleBtn.TextSize = 14
+    TeleBtn.Parent = Content
+    Instance.new("UICorner", TeleBtn).CornerRadius = UDim.new(0, 8)
+    
+    TeleBtn.MouseButton1Click:Connect(function()
+        local Character = LocalPlayer.Character
+        if Character and Character:FindFirstChild("HumanoidRootPart") then
+            IsRetreating = false
+            CurrentTarget = nil 
+            ClearPhysics()
+            Character.HumanoidRootPart.CFrame = BossPos
+        end
+    end)
+end
+
+-- ================================
+-- [LOGIC SYSTEM - รองรับ Infinity HP]
+-- ================================
+
+local function PerformAttack()
+    if not IsInitialized or not AttackRemote then return end
+    local Character = LocalPlayer.Character
+    if not Character or not Character.PrimaryPart then return end
+    local AttackCFrame = Character.PrimaryPart.CFrame * CFrame.new(0, 0, -4)
+    task.spawn(function()
+        pcall(function()
+            AttackRemote:InvokeServer(AttackCFrame)
+        end)
+    end)
+end
+
+local function HandleLogic()
+    local Character = LocalPlayer.Character
+    if not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
+    local HRP = Character.HumanoidRootPart
+
+    -- ยกเลิก retreat เมื่อปิด toggle
+    if not Config.Enabled or not Config.FarmDamage then
+        if IsRetreating then
+            IsRetreating = false
+            ClearPhysics()
+        end
+    end
+
+    -- === AUTO ATTACK ===
+    if Config.Enabled then
+        if not IsRetreating then
+            PerformAttack()
+            GUI.StatusLabel.Text = "STATUS: ⚔️ AUTO ATTACKING..."
+            GUI.StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+        else
+            GUI.StatusLabel.Text = "STATUS: 🛡️ RETREATING..."
+            GUI.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
+        end
+    else
+        GUI.StatusLabel.Text = "STATUS: 🔴 STOPPED"
+        GUI.StatusLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    end
+
+-- === แสดงและประมวลผล HP มอน ===
+    if CurrentTarget then
+        local Hum = CurrentTarget:FindFirstChild("Humanoid")
+        if Hum then
+            GUI.TargetName.Text = CurrentTarget.Name
+            
+            -- อ่านค่า HP
+            local currentHP = 0
+            local maxHP = 0
+            
+            local MonsterInfo = GetMonsterInfo()
+            if MonsterInfo then
+                local monsterData = MonsterInfo:FindFirstChild(CurrentTarget.Name)
+                if monsterData then
+                    maxHP = monsterData:FindFirstChild("MaxHealth") and monsterData.MaxHealth.Value or 
+                            monsterData:FindFirstChild("HP") and monsterData.HP.Value or 
+                            monsterData:GetAttribute("MaxHealth") or 
+                            monsterData:GetAttribute("HP") or 0
+                    currentHP = Hum.Health or 0
+                end
+            end
+            
+            if maxHP == 0 then
+                maxHP = Hum.MaxHealth or 0
+                currentHP = Hum.Health or 0
+                if maxHP == 0 then
+                    maxHP = CurrentTarget:GetAttribute("MaxHealth") or 
+                            CurrentTarget:GetAttribute("MaxHP") or 
+                            Hum:GetAttribute("MaxHealth") or
+                            Hum:GetAttribute("MaxHP") or 0
+                end
+            end
+            
+            local monsterHPPercent = CalculateHPPercent(currentHP, maxHP)
+            local hpPct = monsterHPPercent / 100
+            
+            GUI.HPFill.Size = UDim2.new(hpPct, 0, 1, 0)
+            
+            if maxHP == 0 and currentHP == 0 then
+                GUI.HPText.Text = "HP Not Found"
+                GUI.HPText.TextColor3 = Color3.fromRGB(255, 150, 0)
+            else
+                GUI.HPText.Text = string.format("%d%%", math.floor(monsterHPPercent))
+                GUI.HPText.TextColor3 = Color3.fromRGB(200, 200, 200)
+            end
+
+            -- 🔥 === ระบบ RETREAT (เช็ค HP มอนสเตอร์) ===
+            if Config.FarmDamage then
+                -- เริ่ม RETREAT เมื่อ Monster HP ต่ำ
+                if monsterHPPercent <= Config.RetreatHP and not IsRetreating then
+                    IsRetreating = true
+                    if FightPosition then
+                        if not HRP:FindFirstChild("FloatPosition") then
+                            local BodyPos = Instance.new("BodyPosition")
+                            BodyPos.Name = "FloatPosition"
+                            BodyPos.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                            BodyPos.D = 1250
+                            BodyPos.P = 10000
+                            BodyPos.Position = (FightPosition * CFrame.new(0, Config.SafeHeight, 0)).Position
+                            BodyPos.Parent = HRP
+                        end
+                        if not HRP:FindFirstChild("FloatGyro") then
+                            local Gyro = Instance.new("BodyGyro")
+                            Gyro.Name = "FloatGyro"
+                            Gyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                            Gyro.D = 500
+                            Gyro.P = 30000
+                            Gyro.CFrame = HRP.CFrame
+                            Gyro.Parent = HRP
+                        end
+                        if Character:FindFirstChild("Humanoid") then 
+                            Character.Humanoid.PlatformStand = true 
+                        end
+                    end
+                
+                -- กลับมาต่อสู้เมื่อ Monster HP เต็ม
+                elseif monsterHPPercent >= Config.ResumeHP and IsRetreating then
+                    IsRetreating = false
+                    ClearPhysics()
+                    if FightPosition then 
+                        HRP.CFrame = FightPosition 
+                    end
+                end
+            end
+        end
+    else
+        GUI.TargetName.Text = "No Target"
+        GUI.HPText.Text = ""
+        GUI.HPFill.Size = UDim2.new(0, 0, 1, 0)
+        
+        -- ไม่มีเป้าหมาย → ยกเลิก retreat
+        if IsRetreating then
+            IsRetreating = false
+            ClearPhysics()
+        end
+    end
+end
+
+-- ================================
+-- [STARTUP & MODDED HURKOK]
+-- ================================
+
+task.spawn(InitializeRemote)
+CreateModernGUI()
+
+-- 🖥️ 1. Stabil GUI és logikai hurok (Ez kezeli a felületet és a menüt változatlan sebességgel)
+task.spawn(function()
+    while ScriptRunning do
+        HandleLogic()
+        task.wait(0.1) -- Biztonságos sebesség a GUI-nak, hogy ne tűnjenek el a gombok
+    end
+end)
+
+-- 🚀 2. Különálló ULTRA SPEED KILL AURA HUROK (Ez csak a támadást spammeli a háttérben, maximális sebességgel)
+task.spawn(function()
+    while ScriptRunning do
+        if Config.Enabled and Config.FarmDamage then
+            local Character = LocalPlayer.Character
+            if Character and Character:FindFirstChild("HumanoidRootPart") then
+                local MyPos = Character.HumanoidRootPart.Position
+                
+                -- Kilőjük a támadást az összes környező szörnyre egyszerre (Kill Aura)
+                local function TargetAll(obj)
+                    if obj:IsA("Model") and obj ~= Character and obj:FindFirstChild("Humanoid") and obj:FindFirstChild("HumanoidRootPart") then
+                        if obj.Humanoid.Health > 0 then
+                            local Dist = (obj.HumanoidRootPart.Position - MyPos).Magnitude
+                            if Dist <= Config.ScanRange and AttackRemote then
+                                pcall(function()
+                                    -- Kritikus csomagokat küldünk az összes mobra egyszerre
+                                    AttackRemote:InvokeServer(obj, {
+                                        ["Critical"] = true,
+                                        ["IsCritical"] = true,
+                                        ["Crit"] = true,
+                                        ["DamageMultiplier"] = 2,
+                                        ["Type"] = "Critical"
+                                    })
+                                end)
+                            end
+                        end
+                    elseif obj:IsA("Folder") or obj:IsA("Model") then 
+                        for _, innerObj in pairs(obj:GetChildren()) do
+                            TargetAll(innerObj)
+                        end
+                    end
+                end
+
+                for _, obj in pairs(workspace:GetChildren()) do
+                    TargetAll(obj)
+                end
+            end
+        end
+        task.wait(Config.AttackSpeed) -- Ez pörgeti az 5x-ös vagy maximális ütési sebességet
+    end
+end)
