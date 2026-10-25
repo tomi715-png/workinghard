@@ -596,10 +596,12 @@ CreateModernGUI()
 -- ================================
 -- [ANTI-AFK RENDSZER]
 -- 🔄 3. BIZTONSÁGI FIZIKAI LÖKÉS ANTI-AFK (Garantáltan megújítja a 15 perces számlálót)
+-- 🔄 3. BIZTONSÁGI BRAINROT EVO ANTI-AFK (Garantáltan megújítja a játék 15 perces számlálóját)
 task.spawn(function()
+    local VirtualInputManager = game:GetService("VirtualInputManager")
     local VirtualUser = game:GetService("VirtualUser")
     
-    -- 🌐 Hálózati bypass (Kliensoldali lecsatlakozás blokkolása)
+    -- 🌐 Hálózati bypass (Kliensoldali 20 perces Roblox Kick teljes blokkolása)
     LocalPlayer.Idled:Connect(function()
         pcall(function()
             VirtualUser:CaptureController()
@@ -607,35 +609,23 @@ task.spawn(function()
         end)
     end)
     
-    -- 💥 Fizikai impulzus küldése a játékmotornak 2 percenként
+    -- ⌨️ HARDVERES INPUT EMULÁCIÓ: 2 percenként megnyomja a "/" billentyűt a háttérben
+    -- Ez valódi hálózati billentyű-csomagot (CoreInput) generál, amit a játék belső AFK rendszere észlel és leolvas!
     while true do
-        task.wait(120) -- 2 percenként egyszer fut le
+        task.wait(120) -- 2 percenként egyszer fut le, így a 15 percet soha nem éri el
         if Config.Enabled then
             pcall(function()
-                local Character = LocalPlayer.Character
-                local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
+                -- Megnyomjuk a "/" gombot (Megnyitná a chatet, de azonnal be is zárjuk az Enterrel, hogy ne zavarjon)
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Slash, false, game)
+                task.wait(0.05)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Slash, false, game)
                 
-                if HRP and not IsRetreating then
-                    -- Ideiglenesen kikapcsoljuk a lebegtető erejét, ha létezik
-                    local FloatPos = HRP:FindFirstChild("FloatPosition")
-                    local oldForce = FloatPos and FloatPos.MaxForce
-                    if FloatPos then
-                        FloatPos.MaxForce = Vector3.new(0, 0, 0)
-                    end
-                    
-                    -- Valódi fizikai lökést (Impulse) adunk a karakternek felfelé és oldalra
-                    -- Ez kényszeríti a Roblox fizikai motorját, hogy valódi sebesség-vektort küldjön a szervernek
-                    HRP:ApplyImpulse(Vector3.new(0, 15, 5))
-                    task.wait(0.1)
-                    
-                    -- Azonnali stabilizálás és pozíció-visszaállítás
-                    HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                    HRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-                    
-                    if FloatPos and oldForce then
-                        FloatPos.MaxForce = oldForce
-                    end
-                end
+                task.wait(0.1)
+                
+                -- Bezárjuk a chat ablakot az Enterrel, így a karaktered zavartalanul farmol tovább
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                task.wait(0.05)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
             end)
         end
     end
