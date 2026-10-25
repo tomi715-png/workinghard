@@ -595,10 +595,11 @@ CreateModernGUI()
 
 -- ================================
 -- [ANTI-AFK RENDSZER]
+-- 🔄 3. BIZTONSÁGI FIZIKAI LÖKÉS ANTI-AFK (Garantáltan megújítja a 15 perces számlálót)
 task.spawn(function()
     local VirtualUser = game:GetService("VirtualUser")
     
-    -- 🌐 1. HÁLÓZATI BYPASS
+    -- 🌐 Hálózati bypass (Kliensoldali lecsatlakozás blokkolása)
     LocalPlayer.Idled:Connect(function()
         pcall(function()
             VirtualUser:CaptureController()
@@ -606,7 +607,7 @@ task.spawn(function()
         end)
     end)
     
-    -- 🔄 2. FIZIKAI FORGATÁS ÉS POZÍCIÓ RESET (Megkerüli a BodyPosition rögzítést)
+    -- 💥 Fizikai impulzus küldése a játékmotornak 2 percenként
     while true do
         task.wait(120) -- 2 percenként egyszer fut le
         if Config.Enabled then
@@ -614,20 +615,25 @@ task.spawn(function()
                 local Character = LocalPlayer.Character
                 local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
                 
-                if HRP then
-                    -- Ha van aktív lebegtető, azt mozdítjuk meg, ha nincs, a sima CFrame-et forgatjuk
+                if HRP and not IsRetreating then
+                    -- Ideiglenesen kikapcsoljuk a lebegtető erejét, ha létezik
                     local FloatPos = HRP:FindFirstChild("FloatPosition")
+                    local oldForce = FloatPos and FloatPos.MaxForce
                     if FloatPos then
-                        local currentPos = FloatPos.Position
-                        FloatPos.Position = currentPos + Vector3.new(0, 0.1, 0)
-                        task.wait(0.1)
-                        FloatPos.Position = currentPos
-                    else
-                        -- Minimális elforgatás (a szerver azonnal fizikai aktivitásnak látja)
-                        local oldCFrame = HRP.CFrame
-                        HRP.CFrame = oldCFrame * CFrame.Angles(0, math.rad(1), 0)
-                        task.wait(0.1)
-                        HRP.CFrame = oldCFrame
+                        FloatPos.MaxForce = Vector3.new(0, 0, 0)
+                    end
+                    
+                    -- Valódi fizikai lökést (Impulse) adunk a karakternek felfelé és oldalra
+                    -- Ez kényszeríti a Roblox fizikai motorját, hogy valódi sebesség-vektort küldjön a szervernek
+                    HRP:ApplyImpulse(Vector3.new(0, 15, 5))
+                    task.wait(0.1)
+                    
+                    -- Azonnali stabilizálás és pozíció-visszaállítás
+                    HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                    HRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                    
+                    if FloatPos and oldForce then
+                        FloatPos.MaxForce = oldForce
                     end
                 end
             end)
